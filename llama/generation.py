@@ -164,6 +164,7 @@ class Llama:
 
         """
         # Evaluation
+        torch.cuda.nvtx.range_push("Evaluation")
         min_prompt_len = min(len(t) for t in prompt_tokens)
         with perf_measure(name="Evaluation") as ctx_state:
             params = self.model.params
@@ -226,7 +227,9 @@ class Llama:
                 ctx_state["n_tokens"] += min_prompt_len * len(prompt_tokens) # evaluated tokens
                 if all(eos_reached):
                     break
-
+        
+        torch.cuda.nvtx.range_pop()
+        torch.cuda.nvtx.range_push("Generation")
         # Generation only
         with perf_measure(name="Generation") as ctx_state:
             for cur_pos in range(min_prompt_len+1, total_len):  # start from min_prompt_len + 1 instead of min_prompt_len
@@ -257,6 +260,8 @@ class Llama:
                 ctx_state["n_tokens"] += torch.sum(eos_reached == False) # generated tokens
                 if all(eos_reached):
                     break
+        
+        torch.cuda.nvtx.range_pop()
 
         if logprobs:
             token_logprobs = token_logprobs.tolist()
@@ -361,9 +366,11 @@ class Llama:
         if max_gen_len is None:
             max_gen_len = self.model.params.max_seq_len - 1
 
+        torch.cuda.nvtx.range_push("tokenize")
         prompt_tokens = [
             self.formatter.encode_dialog_prompt(dialog) for dialog in dialogs
         ]
+        torch.cuda.nvtx.range_pop()
         generation_tokens, generation_logprobs = self.generate(
             prompt_tokens=prompt_tokens,
             max_gen_len=max_gen_len,
