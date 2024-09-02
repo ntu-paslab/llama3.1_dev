@@ -14,7 +14,7 @@ def main(
     temperature: float = 0.6,
     top_p: float = 0.9,
     max_seq_len: int = 512,
-    max_batch_size: int = 4,
+    max_batch_size: int = 64, 
     max_gen_len: Optional[int] = None,
 ):
     """
@@ -35,6 +35,7 @@ def main(
         max_batch_size=max_batch_size,
     )
 
+    # test batch size = 1
     dialogs: List[Dialog] = [
         [{"role": "user", "content": "what is the recipe of mayonnaise?"}],
         [
@@ -53,31 +54,32 @@ These are just a few of the many attractions that Paris has to offer. With so mu
             {"role": "user", "content": "What is so great about #1?"},
         ],
         [
-            {"role": "system", "content": "Always answer with Haiku"},
+            # {"role": "system", "content": "Always answer with Haiku"},
             {"role": "user", "content": "I am going to Paris, what should I see?"},
         ],
         [
-            {
-                "role": "system",
-                "content": "Always answer with emojis",
-            },
+            # {
+            #     "role": "system",
+            #     "content": "Always answer with emojis",
+            # },
             {"role": "user", "content": "How to go from Beijing to NY?"},
         ],
-    ]
+    ] * (1 if max_batch_size / 4 < 1 else int(max_batch_size / 4))
+    # print(len(dialogs[:max_batch_size]))
     results = generator.chat_completion(
-        dialogs,
+        dialogs[:max_batch_size],
         max_gen_len=max_gen_len,
         temperature=temperature,
         top_p=top_p,
     )
 
-    for dialog, result in zip(dialogs, results):
-        for msg in dialog:
-            print(f"{msg['role'].capitalize()}: {msg['content']}\n")
-        print(
-            f"> {result['generation']['role'].capitalize()}: {result['generation']['content']}"
-        )
-        print("\n==================================\n")
+    # for dialog, result in zip(dialogs, results):
+    #     for msg in dialog:
+    #         print(f"{msg['role'].capitalize()}: {msg['content']}\n")
+    #     print(
+    #         f"> {result['generation']['role'].capitalize()}: {result['generation']['content']}"
+    #     )
+    #     print("\n==================================\n")
 
 
 if __name__ == "__main__":

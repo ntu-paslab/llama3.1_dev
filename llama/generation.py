@@ -19,6 +19,23 @@ from fairscale.nn.model_parallel.initialize import (
 from llama.model import ModelArgs, Transformer
 from llama.tokenizer import ChatFormat, Dialog, Message, Tokenizer
 
+from contextlib import contextmanager
+
+@contextmanager
+def perf_measure(name: str = None):
+    start = time.perf_counter()
+    prefix = '' if name is None else f'{name} '
+    # n_tokens = 0
+    ctx_state = {"n_tokens": 0}
+    try:
+        yield ctx_state
+    finally:
+        end = time.perf_counter()
+        duration = end - start
+        print(f"{prefix}Tokens #: {ctx_state['n_tokens']}")
+        print(f"{prefix}Duration: {duration} seconds")
+        print(f"{prefix}Performance: {ctx_state['n_tokens'] / duration} tokens/s")
+
 
 class CompletionPrediction(TypedDict, total=False):
     generation: str
@@ -146,63 +163,100 @@ class Llama:
             If logprobs is True, token log probabilities are computed for each generated token.
 
         """
-        params = self.model.params
-        bsz = len(prompt_tokens)
-        assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
-
+        # Evaluation
         min_prompt_len = min(len(t) for t in prompt_tokens)
-        max_prompt_len = max(len(t) for t in prompt_tokens)
-        assert max_prompt_len <= params.max_seq_len
-        total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
+        with perf_measure(name="Evaluation") as ctx_state:
+            params = self.model.params
+            bsz = len(prompt_tokens)
+            assert bsz <= params.max_batch_size, (bsz, params.max_batch_size)
 
-        pad_id = self.tokenizer.pad_id
-        tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device="cuda")
-        for k, t in enumerate(prompt_tokens):
-            tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device="cuda")
-        if logprobs:
-            token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
+            min_prompt_len = min(len(t) for t in prompt_tokens)
+            max_prompt_len = max(len(t) for t in prompt_tokens)
+            assert max_prompt_len <= params.max_seq_len
+            total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
 
-        prev_pos = 0
-        eos_reached = torch.tensor([False] * bsz, device="cuda")
-        input_text_mask = tokens != pad_id
-        if min_prompt_len == total_len:
-            logits = self.model.forward(tokens, prev_pos)
-            token_logprobs = -F.cross_entropy(
-                input=logits.transpose(1, 2),
-                target=tokens,
-                reduction="none",
-                ignore_index=pad_id,
-            )
-
-        stop_tokens = torch.tensor(list(self.tokenizer.stop_tokens))
-
-        for cur_pos in range(min_prompt_len, total_len):
-            logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
-            if temperature > 0:
-                probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
-                next_token = sample_top_p(probs, top_p)
-            else:
-                next_token = torch.argmax(logits[:, -1], dim=-1)
-
-            next_token = next_token.reshape(-1)
-            # only replace token if prompt has already been generated
-            next_token = torch.where(
-                input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
-            )
-            tokens[:, cur_pos] = next_token
+            pad_id = self.tokenizer.pad_id
+            tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device="cuda")
+            for k, t in enumerate(prompt_tokens):
+                tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device="cuda")
             if logprobs:
-                token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
+
+            prev_pos = 0
+            eos_reached = torch.tensor([False] * bsz, device="cuda")
+            input_text_mask = tokens != pad_id
+            if min_prompt_len == total_len:
+                print('testtest\n\n\n\n\n')
+                logits = self.model.forward(tokens, prev_pos)
+                token_logprobs = -F.cross_entropy(
                     input=logits.transpose(1, 2),
-                    target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                    target=tokens,
                     reduction="none",
                     ignore_index=pad_id,
                 )
-            eos_reached |= (~input_text_mask[:, cur_pos]) & (
-                torch.isin(next_token, stop_tokens)
-            )
-            prev_pos = cur_pos
-            if all(eos_reached):
-                break
+
+            stop_tokens = torch.tensor(list(self.tokenizer.stop_tokens))
+
+            # Evaluation only
+            for cur_pos in range(min_prompt_len, min_prompt_len+1):
+                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+                if temperature > 0:
+                    probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+                    next_token = sample_top_p(probs, top_p)
+                else:
+                    next_token = torch.argmax(logits[:, -1], dim=-1)
+
+                next_token = next_token.reshape(-1)
+                # only replace token if prompt has already been generated
+                next_token = torch.where(
+                    input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+                )
+                tokens[:, cur_pos] = next_token
+                if logprobs:
+                    token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                        input=logits.transpose(1, 2),
+                        target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                        reduction="none",
+                        ignore_index=pad_id,
+                    )
+                eos_reached |= (~input_text_mask[:, cur_pos]) & (
+                    torch.isin(next_token, stop_tokens)
+                )
+                prev_pos = cur_pos
+                ctx_state["n_tokens"] += min_prompt_len * len(prompt_tokens) # evaluated tokens
+                if all(eos_reached):
+                    break
+
+        # Generation only
+        with perf_measure(name="Generation") as ctx_state:
+            for cur_pos in range(min_prompt_len+1, total_len):  # start from min_prompt_len + 1 instead of min_prompt_len
+                logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
+                if temperature > 0:
+                    probs = torch.softmax(logits[:, -1] / temperature, dim=-1)
+                    next_token = sample_top_p(probs, top_p)
+                else:
+                    next_token = torch.argmax(logits[:, -1], dim=-1)
+
+                next_token = next_token.reshape(-1)
+                # only replace token if prompt has already been generated
+                next_token = torch.where(
+                    input_text_mask[:, cur_pos], tokens[:, cur_pos], next_token
+                )
+                tokens[:, cur_pos] = next_token
+                if logprobs:
+                    token_logprobs[:, prev_pos + 1 : cur_pos + 1] = -F.cross_entropy(
+                        input=logits.transpose(1, 2),
+                        target=tokens[:, prev_pos + 1 : cur_pos + 1],
+                        reduction="none",
+                        ignore_index=pad_id,
+                    )
+                eos_reached |= (~input_text_mask[:, cur_pos]) & (
+                    torch.isin(next_token, stop_tokens)
+                )
+                prev_pos = cur_pos
+                ctx_state["n_tokens"] += torch.sum(eos_reached == False) # generated tokens
+                if all(eos_reached):
+                    break
 
         if logprobs:
             token_logprobs = token_logprobs.tolist()
