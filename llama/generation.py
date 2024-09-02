@@ -177,9 +177,17 @@ class Llama:
             total_len = min(params.max_seq_len, max_gen_len + max_prompt_len)
 
             pad_id = self.tokenizer.pad_id
+
+            torch.cuda.nvtx.range_push("init tokens")
+
             tokens = torch.full((bsz, total_len), pad_id, dtype=torch.long, device="cuda")
+
+            torch.cuda.nvtx.range_pop()
+            torch.cuda.nvtx.range_push("fill tokens")
             for k, t in enumerate(prompt_tokens):
                 tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device="cuda")
+            torch.cuda.nvtx.range_pop()
+            
             if logprobs:
                 token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
 
