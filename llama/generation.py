@@ -187,7 +187,7 @@ class Llama:
             for k, t in enumerate(prompt_tokens):
                 tokens[k, : len(t)] = torch.tensor(t, dtype=torch.long, device="cuda")
             torch.cuda.nvtx.range_pop()
-            
+
             if logprobs:
                 token_logprobs = torch.zeros_like(tokens, dtype=torch.float)
 
@@ -206,6 +206,7 @@ class Llama:
 
             stop_tokens = torch.tensor(list(self.tokenizer.stop_tokens))
 
+            torch.cuda.nvtx.range_push("prefill")
             # Evaluation only
             for cur_pos in range(min_prompt_len, min_prompt_len+1):
                 logits = self.model.forward(tokens[:, prev_pos:cur_pos], prev_pos)
@@ -235,6 +236,8 @@ class Llama:
                 ctx_state["n_tokens"] += min_prompt_len * len(prompt_tokens) # evaluated tokens
                 if all(eos_reached):
                     break
+
+            torch.cuda.nvtx.range_pop()
         
         torch.cuda.nvtx.range_pop()
         torch.cuda.nvtx.range_push("Generation")
