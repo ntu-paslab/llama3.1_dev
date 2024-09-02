@@ -4,6 +4,7 @@
 from typing import List, Optional
 
 import fire
+import torch
 
 from llama import Dialog, Llama
 
@@ -28,12 +29,14 @@ def main(
 
     `max_gen_len` is optional because finetuned models are able to stop generations naturally.
     """
+    torch.cuda.nvtx.range_push("init tokens")
     generator = Llama.build(
         ckpt_dir=ckpt_dir,
         tokenizer_path=tokenizer_path,
         max_seq_len=max_seq_len,
         max_batch_size=max_batch_size,
     )
+    torch.cuda.nvtx.range_pop()
 
     # test batch size = 1
     dialogs: List[Dialog] = [
